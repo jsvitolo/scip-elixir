@@ -53,11 +53,15 @@ defmodule ScipElixir.Store do
     :ok
   end
 
+  @symbol_columns [:id, :name, :kind, :module, :file, :line, :col, :end_line, :end_col, :arity, :documentation]
+  @ref_columns [:id, :file, :line, :col, :target_module, :target_name, :target_arity, :kind]
+
   # --- Query API ---
 
   @doc "Find symbol definitions by file."
   def symbols_in_file(conn, file) do
     query(conn, "SELECT * FROM symbols WHERE file = ?1 ORDER BY line, col", [file])
+    |> to_maps(@symbol_columns)
   end
 
   @doc "Find a symbol definition by module and name."
@@ -67,6 +71,31 @@ defmodule ScipElixir.Store do
       WHERE module = ?1 AND name = ?2 AND (arity = ?3 OR ?3 IS NULL)
       LIMIT 1
     """, [module, name, arity])
+    |> to_maps(@symbol_columns)
+    |> List.first()
+  end
+
+  @doc "Find symbol at a specific file location."
+  def find_symbol_at(conn, file, line) do
+    query(conn, """
+      SELECT * FROM symbols
+      WHERE file = ?1 AND line = ?2
+      LIMIT 1
+    """, [file, line])
+    |> to_maps(@symbol_columns)
+    |> List.first()
+  end
+
+  @doc "Find a reference at a specific file location."
+  def find_ref_at(conn, file, line) do
+    query(conn, """
+      SELECT * FROM refs
+      WHERE file = ?1 AND line = ?2
+      ORDER BY col
+      LIMIT 1
+    """, [file, line])
+    |> to_maps(@ref_columns)
+    |> List.first()
   end
 
   @doc "Find all references to a symbol."
@@ -76,6 +105,13 @@ defmodule ScipElixir.Store do
       WHERE target_module = ?1 AND target_name = ?2 AND (target_arity = ?3 OR ?3 IS NULL)
       ORDER BY file, line
     """, [module, name, arity])
+    |> to_maps(@ref_columns)
+  end
+
+  @doc "Find all references in a file."
+  def refs_in_file(conn, file) do
+    query(conn, "SELECT * FROM refs WHERE file = ?1 ORDER BY line, col", [file])
+    |> to_maps(@ref_columns)
   end
 
   @doc "Full-text search over symbol names and modules."
@@ -88,6 +124,7 @@ defmodule ScipElixir.Store do
       ORDER BY symbols_fts.rank
       LIMIT ?2
     """, [query_text, limit])
+    |> to_maps(@symbol_columns ++ [:rank])
   end
 
   @doc "Get index statistics."
@@ -101,6 +138,14 @@ defmodule ScipElixir.Store do
       refs: ref_count,
       files: file_count
     }
+  end
+
+  defp to_maps(rows, columns) do
+    Enum.map(rows, fn tuple ->
+      columns
+      |> Enum.zip(Tuple.to_list(tuple))
+      |> Map.new()
+    end)
   end
 
   # --- Private ---

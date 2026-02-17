@@ -14,13 +14,15 @@ defmodule ScipElixir.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {ScipElixir.Application, []}
     ]
   end
 
   defp deps do
     [
-      {:exqlite, "~> 0.27"}
+      {:exqlite, "~> 0.27"},
+      {:gen_lsp, "~> 0.11"}
     ]
   end
 

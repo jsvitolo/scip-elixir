@@ -42,18 +42,13 @@ defmodule Mix.Tasks.Scip.Index do
     # Ensure the project is loaded
     Mix.Task.run("loadpaths")
 
-    case ScipElixir.Indexer.run(indexer_opts) do
-      {:ok, stats} ->
-        Mix.shell().info("""
-        scip-elixir indexing complete!
-          Symbols: #{stats.symbols}
-          Refs:    #{stats.refs}
-          Files:   #{stats.files}
-        """)
+    {:ok, stats} = ScipElixir.Indexer.run(indexer_opts)
 
-      {:error, reason} ->
-        Mix.shell().error("scip-elixir indexing failed: #{inspect(reason)}")
-        exit({:shutdown, 1})
-    end
+    Mix.shell().info("""
+    scip-elixir indexing complete!
+      Symbols: #{stats.symbols}
+      Refs:    #{stats.refs}
+      Files:   #{stats.files}
+    """)
   end
 end
