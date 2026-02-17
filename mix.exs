@@ -22,7 +22,8 @@ defmodule ScipElixir.MixProject do
   defp deps do
     [
       {:exqlite, "~> 0.27"},
-      {:gen_lsp, "~> 0.11"}
+      {:gen_lsp, "~> 0.11"},
+      {:rustler, "~> 0.37", runtime: false}
     ]
   end
 

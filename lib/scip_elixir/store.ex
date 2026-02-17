@@ -53,6 +53,19 @@ defmodule ScipElixir.Store do
     :ok
   end
 
+  @doc "Update a symbol's position (line, col, end_line, end_col)."
+  def update_symbol_position(conn, id, opts) do
+    line = Keyword.get(opts, :line)
+    col = Keyword.get(opts, :col)
+    end_line = Keyword.get(opts, :end_line)
+    end_col = Keyword.get(opts, :end_col)
+
+    execute(conn, """
+      UPDATE symbols SET line = ?1, col = ?2, end_line = ?3, end_col = ?4
+      WHERE id = ?5
+    """, [line, col, end_line, end_col, id])
+  end
+
   @symbol_columns [:id, :name, :kind, :module, :file, :line, :col, :end_line, :end_col, :arity, :documentation]
   @ref_columns [:id, :file, :line, :col, :target_module, :target_name, :target_arity, :kind]
 
