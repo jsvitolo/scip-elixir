@@ -52,7 +52,13 @@ defmodule ScipElixir.MixProject do
     #!/bin/sh
     set -e
 
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    # Resolve symlinks so RELEASE_ROOT is correct when invoked via symlink
+    SELF="$0"
+    if [ -L "$SELF" ]; then
+      LINK="$(readlink "$SELF")"
+      case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+    fi
+    SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
     RELEASE_ROOT="$(dirname "$SCRIPT_DIR")"
 
     export RELEASE_ROOT
