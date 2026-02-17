@@ -68,7 +68,7 @@ jobs:
         env:
           RUSTLER_TARGET: ${{ matrix.rust_target }}
         run: |
-          mix release scip_elixir
+          mix release scip_elixir --overwrite
 
       - name: Rename tarball
         run: |
