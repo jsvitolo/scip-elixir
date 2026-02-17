@@ -56,7 +56,25 @@ defmodule ScipElixir.LSP do
   def start_link(args) do
     {opts, lsp_opts} = Keyword.split(args, [:db_path])
 
+    # Start companion processes if not provided
+    lsp_opts =
+      lsp_opts
+      |> ensure_started(:buffer, fn ->
+        GenLSP.Buffer.start_link(communication: {GenLSP.Communication.Stdio, []})
+      end)
+      |> ensure_started(:assigns, fn -> GenLSP.Assigns.start_link([]) end)
+      |> ensure_started(:task_supervisor, fn -> Task.Supervisor.start_link([]) end)
+
     GenLSP.start_link(__MODULE__, opts, lsp_opts)
+  end
+
+  defp ensure_started(opts, key, starter) do
+    if Keyword.has_key?(opts, key) do
+      opts
+    else
+      {:ok, pid} = starter.()
+      Keyword.put(opts, key, pid)
+    end
   end
 
   # --- GenLSP Callbacks ---
@@ -72,7 +90,7 @@ defmodule ScipElixir.LSP do
     root_uri = params.root_uri
 
     # Open the SQLite index
-    db_path = resolve_db_path(lsp.assigns.db_path, root_uri)
+    db_path = resolve_db_path(assigns(lsp).db_path, root_uri)
 
     store =
       try do
@@ -106,7 +124,7 @@ defmodule ScipElixir.LSP do
   # --- textDocument/definition ---
 
   def handle_request(%TextDocumentDefinition{params: params}, lsp) do
-    if lsp.assigns.store == nil do
+    if assigns(lsp).store == nil do
       {:reply, nil, lsp}
     else
       uri = params.text_document.uri
@@ -124,7 +142,7 @@ defmodule ScipElixir.LSP do
   # --- textDocument/references ---
 
   def handle_request(%TextDocumentReferences{params: params}, lsp) do
-    if lsp.assigns.store == nil do
+    if assigns(lsp).store == nil do
       {:reply, [], lsp}
     else
       uri = params.text_document.uri
@@ -140,7 +158,7 @@ defmodule ScipElixir.LSP do
   # --- textDocument/hover ---
 
   def handle_request(%TextDocumentHover{params: params}, lsp) do
-    if lsp.assigns.store == nil do
+    if assigns(lsp).store == nil do
       {:reply, nil, lsp}
     else
       uri = params.text_document.uri
@@ -158,14 +176,14 @@ defmodule ScipElixir.LSP do
   # --- textDocument/documentSymbol ---
 
   def handle_request(%TextDocumentDocumentSymbol{params: params}, lsp) do
-    if lsp.assigns.store == nil do
+    if assigns(lsp).store == nil do
       {:reply, [], lsp}
     else
       uri = params.text_document.uri
       file = uri_to_path(uri)
 
       symbols =
-        ScipElixir.Store.symbols_in_file(lsp.assigns.store, file)
+        ScipElixir.Store.symbols_in_file(assigns(lsp).store, file)
         |> Enum.map(&symbol_to_document_symbol/1)
 
       {:reply, symbols, lsp}
@@ -175,7 +193,7 @@ defmodule ScipElixir.LSP do
   # --- workspace/symbol ---
 
   def handle_request(%WorkspaceSymbol{params: params}, lsp) do
-    if lsp.assigns.store == nil do
+    if assigns(lsp).store == nil do
       {:reply, [], lsp}
     else
       query = params.query
@@ -184,8 +202,8 @@ defmodule ScipElixir.LSP do
         {:reply, [], lsp}
       else
         symbols =
-          ScipElixir.Store.search(lsp.assigns.store, fts5_query(query))
-          |> Enum.map(fn sym -> symbol_to_symbol_info(sym, lsp.assigns) end)
+          ScipElixir.Store.search(assigns(lsp).store, fts5_query(query))
+          |> Enum.map(fn sym -> symbol_to_symbol_info(sym, assigns(lsp)) end)
 
         {:reply, symbols, lsp}
       end
@@ -201,8 +219,8 @@ defmodule ScipElixir.LSP do
 
   @impl true
   def handle_notification(%Initialized{}, lsp) do
-    if lsp.assigns.store do
-      stats = ScipElixir.Store.stats(lsp.assigns.store)
+    if assigns(lsp).store do
+      stats = ScipElixir.Store.stats(assigns(lsp).store)
 
       GenLSP.log(lsp, "[scip-elixir] Index loaded: #{stats.symbols} symbols, #{stats.refs} refs across #{stats.files} files")
     else
@@ -215,7 +233,7 @@ defmodule ScipElixir.LSP do
   def handle_notification(%TextDocumentDidOpen{params: params}, lsp) do
     uri = params.text_document.uri
     text = params.text_document.text
-    documents = Map.put(lsp.assigns.documents, uri, text)
+    documents = Map.put(assigns(lsp).documents, uri, text)
     {:noreply, assign(lsp, documents: documents)}
   end
 
@@ -226,10 +244,10 @@ defmodule ScipElixir.LSP do
     text =
       case params.content_changes do
         [%{text: text} | _] -> text
-        _ -> Map.get(lsp.assigns.documents, uri, "")
+        _ -> Map.get(assigns(lsp).documents, uri, "")
       end
 
-    documents = Map.put(lsp.assigns.documents, uri, text)
+    documents = Map.put(assigns(lsp).documents, uri, text)
     {:noreply, assign(lsp, documents: documents)}
   end
 
@@ -239,7 +257,7 @@ defmodule ScipElixir.LSP do
 
   def handle_notification(%TextDocumentDidClose{params: params}, lsp) do
     uri = params.text_document.uri
-    documents = Map.delete(lsp.assigns.documents, uri)
+    documents = Map.delete(assigns(lsp).documents, uri)
     {:noreply, assign(lsp, documents: documents)}
   end
 
@@ -256,7 +274,7 @@ defmodule ScipElixir.LSP do
 
   # Get source code for a document (from open buffer or file)
   defp get_source(lsp, uri, file) do
-    case Map.get(lsp.assigns.documents, uri) do
+    case Map.get(assigns(lsp).documents, uri) do
       nil -> File.read(file) |> elem(1)
       text -> text
     end
@@ -302,41 +320,41 @@ defmodule ScipElixir.LSP do
   # --- Definition ---
 
   defp resolve_and_find_definition(lsp, uri, file, line, col) do
-    store = lsp.assigns.store
+    store = assigns(lsp).store
     source = get_source(lsp, uri, file)
 
     # First try tree-sitter resolution
     case resolve_symbol_at_cursor(source, line, col) do
       {:module, mod_name} ->
-        find_module_definition(store, mod_name, lsp.assigns)
+        find_module_definition(store, mod_name, assigns(lsp))
 
       {:function_name, fn_name} ->
         # Try to find via ref at this line (has module context)
         case ScipElixir.Store.find_ref_at(store, file, line + 1) do
           %{target_module: mod, target_name: ^fn_name, target_arity: arity} ->
-            find_function_definition(store, mod, fn_name, arity, lsp.assigns)
+            find_function_definition(store, mod, fn_name, arity, assigns(lsp))
 
           %{target_module: mod} when not is_nil(mod) ->
-            find_function_definition(store, mod, fn_name, nil, lsp.assigns)
+            find_function_definition(store, mod, fn_name, nil, assigns(lsp))
 
           _ ->
             # Fallback: search by name across all modules
-            search_definition_by_name(store, fn_name, lsp.assigns)
+            search_definition_by_name(store, fn_name, assigns(lsp))
         end
 
       {:identifier, name} ->
         # Could be a local function call or variable
         case ScipElixir.Store.find_ref_at(store, file, line + 1) do
           %{target_module: mod, target_name: ^name, target_arity: arity} ->
-            find_function_definition(store, mod, name, arity, lsp.assigns)
+            find_function_definition(store, mod, name, arity, assigns(lsp))
 
           _ ->
-            search_definition_by_name(store, name, lsp.assigns)
+            search_definition_by_name(store, name, assigns(lsp))
         end
 
       _ ->
         # Fallback to line-based lookup
-        fallback_definition(store, file, line + 1, lsp.assigns)
+        fallback_definition(store, file, line + 1, assigns(lsp))
     end
   end
 
@@ -386,7 +404,7 @@ defmodule ScipElixir.LSP do
   # --- References ---
 
   defp resolve_and_find_references(lsp, uri, file, line, col) do
-    store = lsp.assigns.store
+    store = assigns(lsp).store
     source = get_source(lsp, uri, file)
 
     {module, name, arity} =
@@ -434,7 +452,7 @@ defmodule ScipElixir.LSP do
 
     if module do
       ScipElixir.Store.find_refs(store, module, name, arity)
-      |> Enum.map(fn ref -> ref_to_location(ref, lsp.assigns) end)
+      |> Enum.map(fn ref -> ref_to_location(ref, assigns(lsp)) end)
     else
       []
     end
@@ -443,7 +461,7 @@ defmodule ScipElixir.LSP do
   # --- Hover ---
 
   defp resolve_and_hover(lsp, uri, file, line, col) do
-    store = lsp.assigns.store
+    store = assigns(lsp).store
     source = get_source(lsp, uri, file)
 
     sym =

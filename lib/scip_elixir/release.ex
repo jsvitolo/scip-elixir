@@ -10,6 +10,9 @@ defmodule ScipElixir.Release do
 
   @doc "Start the LSP server on stdio. Blocks forever."
   def lsp do
+    # eval uses start_clean boot — applications are NOT auto-started
+    {:ok, _} = Application.ensure_all_started(:scip_elixir)
+
     # Redirect logger to stderr so it doesn't pollute LSP stdio
     Logger.configure(level: :warning)
 
@@ -21,6 +24,7 @@ defmodule ScipElixir.Release do
 
   @doc "Run the indexer on the current project."
   def index do
+    {:ok, _} = Application.ensure_all_started(:scip_elixir)
     {:ok, stats} = ScipElixir.Indexer.run()
 
     IO.puts(
