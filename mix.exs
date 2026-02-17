@@ -1,14 +1,17 @@
 defmodule ScipElixir.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+
   def project do
     [
       app: :scip_elixir,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      releases: releases()
     ]
   end
 
@@ -29,5 +32,61 @@ defmodule ScipElixir.MixProject do
 
   defp aliases do
     []
+  end
+
+  defp releases do
+    [
+      scip_elixir: [
+        include_erts: true,
+        include_executables_for: [:unix],
+        steps: [:assemble, &copy_wrapper/1, :tar]
+      ]
+    ]
+  end
+
+  # Copy the scip-elixir wrapper script into the release bin/ directory
+  defp copy_wrapper(release) do
+    bin_dir = Path.join(release.path, "bin")
+
+    wrapper = ~S"""
+    #!/bin/sh
+    set -e
+
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    RELEASE_ROOT="$(dirname "$SCRIPT_DIR")"
+
+    export RELEASE_ROOT
+    export RELEASE_NAME="scip_elixir"
+    export RELEASE_VSN="${RELEASE_VSN:-$(cat "$RELEASE_ROOT/releases/start_erl.data" | cut -d' ' -f2)}"
+    export RELEASE_COMMAND="eval"
+
+    case "$1" in
+      lsp|--stdio|"")
+        exec "$RELEASE_ROOT/bin/scip_elixir" eval "ScipElixir.Release.lsp()"
+        ;;
+      index)
+        shift
+        exec "$RELEASE_ROOT/bin/scip_elixir" eval "ScipElixir.Release.index()"
+        ;;
+      version)
+        exec "$RELEASE_ROOT/bin/scip_elixir" eval "IO.puts(ScipElixir.Release.version())"
+        ;;
+      *)
+        echo "Usage: scip-elixir [lsp|index|version]"
+        echo ""
+        echo "Commands:"
+        echo "  lsp      Start the LSP server on stdio (default)"
+        echo "  index    Run the indexer on the current project"
+        echo "  version  Print version"
+        exit 1
+        ;;
+    esac
+    """
+
+    wrapper_path = Path.join(bin_dir, "scip-elixir")
+    File.write!(wrapper_path, wrapper)
+    File.chmod!(wrapper_path, 0o755)
+
+    release
   end
 end
