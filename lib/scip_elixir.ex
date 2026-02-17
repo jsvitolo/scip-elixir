@@ -1,18 +1,8 @@
 defmodule ScipElixir do
   @moduledoc """
-  Documentation for `ScipElixir`.
+  Elixir code intelligence tool combining compiler tracers and SQLite indexing.
+
+  Provides semantic code intelligence (definitions, references, workspace search)
+  by capturing compiler events and storing them in an indexed SQLite database.
   """
-
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> ScipElixir.hello()
-      :world
-
-  """
-  def hello do
-    :world
-  end
 end
