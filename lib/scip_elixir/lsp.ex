@@ -129,7 +129,7 @@ defmodule ScipElixir.LSP do
          document_symbol_provider: true,
          workspace_symbol_provider: true
        },
-       server_info: %{name: "scip-elixir", version: "0.1.3"}
+       server_info: %{name: "scip-elixir", version: "0.1.4"}
      }, assign(lsp, store: store, root_uri: root_uri, db_path: db_path, needs_index: needs_index)}
   end
 
