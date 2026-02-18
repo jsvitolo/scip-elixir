@@ -86,7 +86,16 @@ defmodule ScipElixir.LSP do
   @impl true
   def init(lsp, opts) do
     db_path = Keyword.get(opts, :db_path, @default_db_path)
-    {:ok, assign(lsp, db_path: db_path, store: nil, root_uri: nil, documents: %{})}
+
+    {:ok,
+     assign(lsp,
+       db_path: db_path,
+       store: nil,
+       root_uri: nil,
+       documents: %{},
+       indexing: false,
+       reindex_timer: nil
+     )}
   end
 
   @impl true
@@ -299,7 +308,12 @@ defmodule ScipElixir.LSP do
   end
 
   def handle_notification(%TextDocumentDidSave{}, lsp) do
-    {:noreply, lsp}
+    # Cancel any pending reindex timer
+    if assigns(lsp).reindex_timer, do: Process.cancel_timer(assigns(lsp).reindex_timer)
+
+    # Debounce: schedule reindex 2 seconds after last save
+    timer = Process.send_after(self(), :trigger_reindex, 2_000)
+    {:noreply, assign(lsp, reindex_timer: timer)}
   end
 
   def handle_notification(%TextDocumentDidClose{params: params}, lsp) do
@@ -313,8 +327,37 @@ defmodule ScipElixir.LSP do
   end
 
   @impl true
+  def handle_info(:trigger_reindex, lsp) do
+    if assigns(lsp).indexing do
+      GenLSP.log(lsp, "[scip-elixir] Index already running, skipping")
+      {:noreply, assign(lsp, reindex_timer: nil)}
+    else
+      GenLSP.log(lsp, "[scip-elixir] Re-indexing project...")
+
+      db_path = assigns(lsp).db_path
+      root_uri = assigns(lsp).root_uri
+      server = self()
+
+      spawn(fn ->
+        project_dir =
+          case root_uri do
+            "file://" <> path -> URI.decode(path)
+            _ -> File.cwd!()
+          end
+
+        result = ScipElixir.Release.index_via_shell(project_dir: project_dir, db_path: db_path)
+        send(server, {:index_complete, result, db_path})
+      end)
+
+      {:noreply, assign(lsp, indexing: true, reindex_timer: nil)}
+    end
+  end
+
   def handle_info({:index_complete, {:ok, _}, db_path}, lsp) do
     try do
+      # Close old store if open
+      if assigns(lsp).store, do: ScipElixir.Store.close(assigns(lsp).store)
+
       {:ok, conn} = ScipElixir.Store.open(db_path)
       stats = ScipElixir.Store.stats(conn)
 
@@ -323,21 +366,21 @@ defmodule ScipElixir.LSP do
         "[scip-elixir] Index ready: #{stats.symbols} symbols, #{stats.refs} refs across #{stats.files} files"
       )
 
-      {:noreply, assign(lsp, store: conn, needs_index: false)}
+      {:noreply, assign(lsp, store: conn, needs_index: false, indexing: false)}
     rescue
       e ->
         GenLSP.warning(lsp, "[scip-elixir] Index built but could not open: #{inspect(e)}")
-        {:noreply, lsp}
+        {:noreply, assign(lsp, indexing: false)}
     end
   end
 
   def handle_info({:index_complete, {:error, reason}, _db_path}, lsp) do
     GenLSP.warning(
       lsp,
-      "[scip-elixir] Auto-indexing failed: #{inspect(reason)}. Run: scip-elixir index"
+      "[scip-elixir] Indexing failed: #{inspect(reason)}. Run: scip-elixir index"
     )
 
-    {:noreply, lsp}
+    {:noreply, assign(lsp, indexing: false)}
   end
 
   def handle_info(_msg, lsp) do

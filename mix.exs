@@ -98,16 +98,22 @@ defmodule ScipElixir.MixProject do
 
     # Build -pa args for all ebin dirs (std libs are stripped at build time)
     PA_ARGS=""
+    EBIN_LIST=""
     for ebin in "$ROOT"/lib/*/ebin; do
-      [ -d "$ebin" ] && PA_ARGS="$PA_ARGS -pa $ebin"
+      if [ -d "$ebin" ]; then
+        PA_ARGS="$PA_ARGS -pa $ebin"
+        EBIN_LIST="$EBIN_LIST\"$ebin\","
+      fi
     done
+    EBIN_LIST="${EBIN_LIST%,}"
 
     case "$1" in
       lsp|--stdio|"")
         exec elixir $PA_ARGS --no-halt -e "ScipElixir.Release.lsp()"
         ;;
       index)
-        exec elixir $PA_ARGS -S mix run --no-start -e "ScipElixir.Release.index()"
+        # mix run resets the code path, so we prepend paths in the script
+        exec elixir -S mix run --no-start -e "[$EBIN_LIST] |> Enum.each(&Code.prepend_path/1); ScipElixir.Release.index()"
         ;;
       version)
         exec elixir $PA_ARGS -e "IO.puts(ScipElixir.Release.version())"

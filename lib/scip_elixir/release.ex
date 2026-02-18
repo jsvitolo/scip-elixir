@@ -54,15 +54,21 @@ defmodule ScipElixir.Release do
     project_dir = Keyword.get(opts, :project_dir, File.cwd!())
     db_path = Keyword.get(opts, :db_path, ".scip-elixir/index.db")
 
-    pa_args = release_pa_args()
+    ebin_paths = release_ebin_paths()
 
-    if pa_args == [] do
+    if ebin_paths == [] do
       IO.puts(:stderr, "[scip-elixir] Error: could not find BEAM files")
       {:error, :no_beams}
     else
-      script = ~s|ScipElixir.Indexer.run(db_path: "#{db_path}")|
+      # mix run resets the code path, so we prepend paths via Code.prepend_path
+      # instead of using -pa args which get wiped
+      paths_expr = ebin_paths |> Enum.map(&~s|"#{&1}"|) |> Enum.join(", ")
 
-      args = pa_args ++ ["-S", "mix", "run", "--no-start", "-e", script]
+      script =
+        "[#{paths_expr}] |> Enum.each(&Code.prepend_path/1); " <>
+          ~s|ScipElixir.Indexer.run(db_path: "#{db_path}")|
+
+      args = ["-S", "mix", "run", "--no-start", "-e", script]
 
       IO.puts(:stderr, "[scip-elixir] Indexing #{project_dir}...")
 
@@ -93,9 +99,9 @@ defmodule ScipElixir.Release do
     )
   end
 
-  # Build -pa arguments pointing to BEAM directories in the release's lib/.
+  # Return list of ebin directories in the release's lib/.
   # Standard libs are stripped at build time, so all entries are deps.
-  defp release_pa_args do
+  defp release_ebin_paths do
     case :code.lib_dir(:scip_elixir) do
       {:error, _} ->
         []
@@ -108,7 +114,6 @@ defmodule ScipElixir.Release do
             entries
             |> Enum.map(&Path.join([release_lib, &1, "ebin"]))
             |> Enum.filter(&File.dir?/1)
-            |> Enum.flat_map(&["-pa", &1])
 
           _ ->
             []
