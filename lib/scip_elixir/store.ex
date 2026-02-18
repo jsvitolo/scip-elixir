@@ -81,7 +81,9 @@ defmodule ScipElixir.Store do
   def find_symbol(conn, module, name, arity) do
     query(conn, """
       SELECT * FROM symbols
-      WHERE module = ?1 AND name = ?2 AND (arity = ?3 OR ?3 IS NULL)
+      WHERE (module = ?1 OR (?1 IS NULL AND kind = 'module'))
+        AND name = ?2
+        AND (arity = ?3 OR ?3 IS NULL)
       LIMIT 1
     """, [module, name, arity])
     |> to_maps(@symbol_columns)
@@ -115,7 +117,9 @@ defmodule ScipElixir.Store do
   def find_refs(conn, module, name, arity) do
     query(conn, """
       SELECT * FROM refs
-      WHERE target_module = ?1 AND target_name = ?2 AND (target_arity = ?3 OR ?3 IS NULL)
+      WHERE target_module = ?1
+        AND (?2 IS NULL OR target_name = ?2)
+        AND (target_arity = ?3 OR ?3 IS NULL)
       ORDER BY file, line
     """, [module, name, arity])
     |> to_maps(@ref_columns)

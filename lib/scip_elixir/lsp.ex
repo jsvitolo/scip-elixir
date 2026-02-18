@@ -334,12 +334,12 @@ defmodule ScipElixir.LSP do
           %{target_module: mod, target_name: ^fn_name, target_arity: arity} ->
             find_function_definition(store, mod, fn_name, arity, assigns(lsp))
 
-          %{target_module: mod} when not is_nil(mod) ->
-            find_function_definition(store, mod, fn_name, nil, assigns(lsp))
-
           _ ->
-            # Fallback: search by name across all modules
-            search_definition_by_name(store, fn_name, assigns(lsp))
+            # No matching ref — might be hovering over a definition
+            case ScipElixir.Store.find_symbol_at(store, file, line + 1) do
+              %{} = sym -> {:ok, symbol_to_location(sym, assigns(lsp))}
+              nil -> search_definition_by_name(store, fn_name, assigns(lsp))
+            end
         end
 
       {:identifier, name} ->
@@ -349,7 +349,10 @@ defmodule ScipElixir.LSP do
             find_function_definition(store, mod, name, arity, assigns(lsp))
 
           _ ->
-            search_definition_by_name(store, name, assigns(lsp))
+            case ScipElixir.Store.find_symbol_at(store, file, line + 1) do
+              %{} = sym -> {:ok, symbol_to_location(sym, assigns(lsp))}
+              nil -> search_definition_by_name(store, name, assigns(lsp))
+            end
         end
 
       _ ->
@@ -385,15 +388,23 @@ defmodule ScipElixir.LSP do
   end
 
   defp fallback_definition(store, file, line, assigns) do
-    case ScipElixir.Store.find_ref_at(store, file, line) do
-      %{target_module: mod, target_name: name, target_arity: arity} when not is_nil(mod) ->
-        if is_nil(name) do
-          find_module_definition(store, mod, assigns)
-        else
-          find_function_definition(store, mod, name, arity, assigns)
-        end
+    result =
+      case ScipElixir.Store.find_ref_at(store, file, line) do
+        %{target_module: mod, target_name: name, target_arity: arity} when not is_nil(mod) ->
+          if is_nil(name) do
+            find_module_definition(store, mod, assigns)
+          else
+            find_function_definition(store, mod, name, arity, assigns)
+          end
 
-      _ ->
+        _ ->
+          :error
+      end
+
+    # If ref-based lookup failed, try symbol at position
+    case result do
+      {:ok, _} = ok -> ok
+      :error ->
         case ScipElixir.Store.find_symbol_at(store, file, line) do
           %{} = sym -> {:ok, symbol_to_location(sym, assigns)}
           nil -> :error
@@ -418,7 +429,12 @@ defmodule ScipElixir.LSP do
               {mod, fn_name, arity}
 
             _ ->
-              {nil, fn_name, nil}
+              # On a definition — look up symbol directly to get module info
+              case ScipElixir.Store.find_symbol_at(store, file, line + 1) do
+                %{module: mod, name: ^fn_name, arity: a} -> {mod, fn_name, a}
+                %{name: ^fn_name, kind: "module"} -> {fn_name, nil, nil}
+                _ -> {nil, fn_name, nil}
+              end
           end
 
         {:identifier, name} ->
@@ -475,7 +491,8 @@ defmodule ScipElixir.LSP do
               ScipElixir.Store.find_symbol(store, mod, fn_name, arity)
 
             _ ->
-              nil
+              # Hovering over a definition — no useful ref, look up symbol directly
+              ScipElixir.Store.find_symbol_at(store, file, line + 1)
           end
 
         {:identifier, name} ->
@@ -488,22 +505,31 @@ defmodule ScipElixir.LSP do
           end
 
         _ ->
-          case ScipElixir.Store.find_ref_at(store, file, line + 1) do
-            %{target_module: mod, target_name: nil} ->
-              ScipElixir.Store.find_symbol(store, nil, mod, nil)
-
-            %{target_module: mod, target_name: name, target_arity: arity} ->
-              ScipElixir.Store.find_symbol(store, mod, name, arity)
-
-            nil ->
-              ScipElixir.Store.find_symbol_at(store, file, line + 1)
-          end
+          resolve_hover_from_ref_or_symbol(store, file, line + 1)
       end
 
     case sym do
       %{} = s -> {:ok, build_hover(s)}
       nil -> :error
     end
+  end
+
+  # Try ref-based lookup first, then fall back to symbol-at-position
+  defp resolve_hover_from_ref_or_symbol(store, file, line) do
+    result =
+      case ScipElixir.Store.find_ref_at(store, file, line) do
+        %{target_module: mod, target_name: nil} ->
+          ScipElixir.Store.find_symbol(store, nil, mod, nil)
+
+        %{target_module: mod, target_name: name, target_arity: arity} ->
+          ScipElixir.Store.find_symbol(store, mod, name, arity)
+
+        nil ->
+          nil
+      end
+
+    # If ref-based lookup failed, try symbol at position
+    result || ScipElixir.Store.find_symbol_at(store, file, line)
   end
 
   defp build_hover(sym) do
