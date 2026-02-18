@@ -10,6 +10,7 @@ defmodule ScipElixir.LSP do
   - `textDocument/definition` — go to definition
   - `textDocument/references` — find all references
   - `textDocument/hover` — documentation on hover
+  - `textDocument/rename` — rename symbol across project
   - `textDocument/documentSymbol` — symbols in current file
   - `workspace/symbol` — project-wide symbol search (FTS5)
   """
@@ -29,7 +30,9 @@ defmodule ScipElixir.LSP do
     Hover,
     MarkupContent,
     SymbolInformation,
-    DocumentSymbol
+    DocumentSymbol,
+    WorkspaceEdit,
+    TextEdit
   }
 
   alias GenLSP.Requests.{
@@ -37,6 +40,7 @@ defmodule ScipElixir.LSP do
     TextDocumentDefinition,
     TextDocumentReferences,
     TextDocumentHover,
+    TextDocumentRename,
     TextDocumentDocumentSymbol,
     WorkspaceSymbol
   }
@@ -114,10 +118,11 @@ defmodule ScipElixir.LSP do
          definition_provider: true,
          references_provider: true,
          hover_provider: true,
+         rename_provider: true,
          document_symbol_provider: true,
          workspace_symbol_provider: true
        },
-       server_info: %{name: "scip-elixir", version: "0.1.0"}
+       server_info: %{name: "scip-elixir", version: "0.1.1"}
      }, assign(lsp, store: store, root_uri: root_uri)}
   end
 
@@ -152,6 +157,25 @@ defmodule ScipElixir.LSP do
 
       locations = resolve_and_find_references(lsp, uri, file, line, col)
       {:reply, locations, lsp}
+    end
+  end
+
+  # --- textDocument/rename ---
+
+  def handle_request(%TextDocumentRename{params: params}, lsp) do
+    if assigns(lsp).store == nil do
+      {:reply, nil, lsp}
+    else
+      uri = params.text_document.uri
+      line = params.position.line
+      col = params.position.character
+      file = uri_to_path(uri)
+      new_name = params.new_name
+
+      case resolve_and_rename(lsp, uri, file, line, col, new_name) do
+        {:ok, workspace_edit} -> {:reply, workspace_edit, lsp}
+        :error -> {:reply, nil, lsp}
+      end
     end
   end
 
@@ -472,6 +496,143 @@ defmodule ScipElixir.LSP do
     else
       []
     end
+  end
+
+  # --- Rename ---
+
+  defp resolve_and_rename(lsp, uri, file, line, col, new_name) do
+    store = assigns(lsp).store
+    source = get_source(lsp, uri, file)
+
+    # Resolve what's at cursor — reuse the same logic as references
+    {module, old_name, arity} =
+      case resolve_symbol_at_cursor(source, line, col) do
+        {:function_name, fn_name} ->
+          case ScipElixir.Store.find_ref_at(store, file, line + 1) do
+            %{target_module: mod, target_name: ^fn_name, target_arity: a} ->
+              {mod, fn_name, a}
+
+            _ ->
+              case ScipElixir.Store.find_symbol_at(store, file, line + 1) do
+                %{module: mod, name: ^fn_name, arity: a} -> {mod, fn_name, a}
+                _ -> {nil, nil, nil}
+              end
+          end
+
+        {:identifier, name} ->
+          case ScipElixir.Store.find_ref_at(store, file, line + 1) do
+            %{target_module: mod, target_name: ^name, target_arity: a} ->
+              {mod, name, a}
+
+            _ ->
+              case ScipElixir.Store.find_symbol_at(store, file, line + 1) do
+                %{module: mod, name: ^name, arity: a} -> {mod, name, a}
+                _ -> {nil, nil, nil}
+              end
+          end
+
+        _ ->
+          {nil, nil, nil}
+      end
+
+    if is_nil(old_name) do
+      :error
+    else
+      # Collect all locations to rename
+      edits = collect_rename_locations(store, module, old_name, arity, file)
+
+      if edits == [] do
+        :error
+      else
+        changes = build_rename_changes(edits, old_name, new_name)
+        {:ok, %WorkspaceEdit{changes: changes}}
+      end
+    end
+  end
+
+  # Collect all locations where the name appears: definition + all references
+  defp collect_rename_locations(store, module, name, arity, _file) do
+    # 1. Find the definition symbol
+    def_locations =
+      case ScipElixir.Store.find_symbol(store, module, name, arity) do
+        %{file: f, line: l} = sym ->
+          # Symbol col points to `def`/`defp`, need to find the name column
+          case find_name_col_in_def(f, l, name) do
+            {:ok, name_col} -> [{f, l, name_col}]
+            :error -> [{f, l, sym[:col]}]
+          end
+
+        nil ->
+          []
+      end
+
+    # 2. Find all references (call sites)
+    ref_locations =
+      ScipElixir.Store.find_refs(store, module, name, arity)
+      |> Enum.filter(fn ref -> ref[:kind] == "function" end)
+      |> Enum.map(fn ref -> {ref[:file], ref[:line], ref[:col]} end)
+
+    # Deduplicate (some refs appear twice due to compiler tracing)
+    (def_locations ++ ref_locations)
+    |> Enum.uniq()
+  end
+
+  # Find the exact column of the function name within a definition line.
+  # For `  def open(path) do`, col of symbol is 3 (pointing to `def`),
+  # but we need col 7 (pointing to `open`).
+  defp find_name_col_in_def(file, line, name) do
+    case File.read(file) do
+      {:ok, content} ->
+        lines = String.split(content, "\n")
+
+        if line >= 1 and line <= length(lines) do
+          source_line = Enum.at(lines, line - 1)
+          # Match def/defp/defmacro/defmacrop followed by the name
+          pattern = ~r/(def|defp|defmacro|defmacrop|defguard|defguardp)\s+#{Regex.escape(name)}/
+          case Regex.run(pattern, source_line, return: :index) do
+            [{start, len} | _] ->
+              # The name starts after the keyword + space
+              name_start = start + len - String.length(name)
+              # Convert to 1-indexed
+              {:ok, name_start + 1}
+
+            _ ->
+              :error
+          end
+        else
+          :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  # Build WorkspaceEdit changes map: %{uri => [TextEdit]}
+  defp build_rename_changes(locations, old_name, new_name) do
+    name_len = String.length(old_name)
+
+    locations
+    |> Enum.group_by(fn {file, _line, _col} -> path_to_uri(file) end)
+    |> Enum.map(fn {uri, locs} ->
+      text_edits =
+        Enum.map(locs, fn {_file, line, col} ->
+          # DB uses 1-indexed, LSP uses 0-indexed
+          lsp_line = line - 1
+          lsp_col = col - 1
+
+          %TextEdit{
+            range: %Range{
+              start: %Position{line: lsp_line, character: lsp_col},
+              end: %Position{line: lsp_line, character: lsp_col + name_len}
+            },
+            new_text: new_name
+          }
+        end)
+
+      {uri, text_edits}
+    end)
+    |> Map.new()
   end
 
   # --- Hover ---
