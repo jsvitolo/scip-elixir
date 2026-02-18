@@ -1,7 +1,7 @@
 defmodule ScipElixir.MixProject do
   use Mix.Project
 
-  @version "0.1.4"
+  @version "0.1.5"
 
   def project do
     [
@@ -37,14 +37,41 @@ defmodule ScipElixir.MixProject do
   defp releases do
     [
       scip_elixir: [
-        include_erts: true,
+        include_erts: false,
         include_executables_for: [:unix],
-        steps: [:assemble, &copy_wrapper/1, :tar]
+        steps: [:assemble, &strip_std_libs/1, &copy_wrapper/1, :tar]
       ]
     ]
   end
 
-  # Copy the scip-elixir wrapper script into the release bin/ directory
+  # Remove standard Elixir/OTP libraries from the release.
+  # The wrapper script uses system Elixir which provides these.
+  # Stripping avoids version conflicts and reduces archive size.
+  @std_libs ~w(
+    asn1 compiler crypto elixir eex eunit hex iex inets kernel logger
+    mix mnesia observer parsetools public_key sasl ssl stdlib
+    syntax_tools tools wx xmerl
+  )
+
+  defp strip_std_libs(release) do
+    lib_dir = Path.join(release.path, "lib")
+
+    File.ls!(lib_dir)
+    |> Enum.each(fn entry ->
+      app_name = entry |> String.split("-") |> List.first()
+
+      if app_name in @std_libs do
+        Path.join(lib_dir, entry) |> File.rm_rf!()
+      end
+    end)
+
+    release
+  end
+
+  # Write the scip-elixir launcher script that uses system Elixir.
+  # Unlike OTP release scripts, this requires Elixir to be installed
+  # on the system (like elixir-ls). This ensures Mix is available for
+  # compiling user projects during indexing.
   defp copy_wrapper(release) do
     bin_dir = Path.join(release.path, "bin")
 
@@ -52,30 +79,38 @@ defmodule ScipElixir.MixProject do
     #!/bin/sh
     set -e
 
-    # Resolve symlinks so RELEASE_ROOT is correct when invoked via symlink
+    # Resolve symlinks so paths are correct when invoked via symlink
     SELF="$0"
     if [ -L "$SELF" ]; then
       LINK="$(readlink "$SELF")"
       case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
     fi
     SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
-    RELEASE_ROOT="$(dirname "$SCRIPT_DIR")"
+    ROOT="$(dirname "$SCRIPT_DIR")"
 
-    export RELEASE_ROOT
-    export RELEASE_NAME="scip_elixir"
-    export RELEASE_VSN="${RELEASE_VSN:-$(cat "$RELEASE_ROOT/releases/start_erl.data" | cut -d' ' -f2)}"
-    export RELEASE_COMMAND="eval"
+    # Require system Elixir (provides Mix, compiler, standard libs)
+    if ! command -v elixir >/dev/null 2>&1; then
+      echo "Error: elixir not found on PATH." >&2
+      echo "scip-elixir requires Elixir >= 1.17 to be installed." >&2
+      echo "Install via: https://elixir-lang.org/install.html" >&2
+      exit 1
+    fi
+
+    # Build -pa args for all ebin dirs (std libs are stripped at build time)
+    PA_ARGS=""
+    for ebin in "$ROOT"/lib/*/ebin; do
+      [ -d "$ebin" ] && PA_ARGS="$PA_ARGS -pa $ebin"
+    done
 
     case "$1" in
       lsp|--stdio|"")
-        exec "$RELEASE_ROOT/bin/scip_elixir" eval "ScipElixir.Release.lsp()"
+        exec elixir $PA_ARGS --no-halt -e "ScipElixir.Release.lsp()"
         ;;
       index)
-        shift
-        exec "$RELEASE_ROOT/bin/scip_elixir" eval "ScipElixir.Release.index()"
+        exec elixir $PA_ARGS -S mix run --no-start -e "ScipElixir.Release.index()"
         ;;
       version)
-        exec "$RELEASE_ROOT/bin/scip_elixir" eval "IO.puts(ScipElixir.Release.version())"
+        exec elixir $PA_ARGS -e "IO.puts(ScipElixir.Release.version())"
         ;;
       *)
         echo "Usage: scip-elixir [lsp|index|version]"
