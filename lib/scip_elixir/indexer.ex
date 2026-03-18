@@ -42,17 +42,36 @@ defmodule ScipElixir.Indexer do
 
       try do
         # 5. Trigger compilation
-        # We use Kernel.ParallelCompiler directly because mix compile
-        # may skip recompilation in the same VM session even with --force.
-        # First ensure deps are compiled via mix.
-        Mix.Task.run("compile", [])
+        # Use loadpaths to ensure deps are on the code path without
+        # triggering a full recompile (which can take minutes on large projects).
+        Mix.Task.run("loadpaths", [])
 
         # Then recompile project files with our tracer active
-        project_root = File.cwd!()
-        files = Path.wildcard(Path.join([project_root, "lib", "**", "*.ex"]))
+        # Collect files from both regular (lib/**/*.ex) and umbrella (apps/*/lib/**/*.ex)
+        # Use explicit project_root if provided — Mix may change cwd during loadpaths
+        project_root = Keyword.get(opts, :project_root, File.cwd!())
+
+        files =
+          [
+            Path.wildcard(Path.join([project_root, "lib", "**", "*.ex"])),
+            Path.wildcard(Path.join([project_root, "apps", "*", "lib", "**", "*.ex"]))
+          ]
+          |> List.flatten()
+          |> Enum.uniq()
+
         Logger.info("[scip-elixir] Compiling #{length(files)} files with tracer...")
 
-        Kernel.ParallelCompiler.compile(files)
+        # Suppress "redefining module" warnings that occur when modules are already
+        # loaded in memory from a previous _build/dev compilation. These warnings
+        # are harmless for indexing but can cause non-zero exit codes.
+        previous_ignore_conflict = Code.get_compiler_option(:ignore_module_conflict)
+        Code.put_compiler_option(:ignore_module_conflict, true)
+
+        try do
+          Kernel.ParallelCompiler.compile(files)
+        after
+          Code.put_compiler_option(:ignore_module_conflict, previous_ignore_conflict)
+        end
 
         # 6. Get stats before flush
         stats = ScipElixir.Collector.stats()

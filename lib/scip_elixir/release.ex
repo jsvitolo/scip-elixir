@@ -66,7 +66,7 @@ defmodule ScipElixir.Release do
 
       script =
         "[#{paths_expr}] |> Enum.each(&Code.prepend_path/1); " <>
-          ~s|ScipElixir.Indexer.run(db_path: "#{db_path}")|
+          ~s|ScipElixir.Indexer.run(db_path: "#{db_path}", project_root: "#{project_dir}")|
 
       args = ["-S", "mix", "run", "--no-start", "-e", script]
 

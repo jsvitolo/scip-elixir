@@ -8,6 +8,13 @@ defmodule ScipElixir.Store do
 
   @doc "Open a SQLite database and initialize the schema."
   def open(path) do
+    # Clean up orphaned WAL/SHM files if the main DB doesn't exist
+    if not File.exists?(path) do
+      File.rm("#{path}-wal")
+      File.rm("#{path}-shm")
+    end
+
+    path |> Path.dirname() |> File.mkdir_p!()
     {:ok, conn} = Exqlite.Sqlite3.open(path)
     :ok = migrate(conn)
     {:ok, conn}
