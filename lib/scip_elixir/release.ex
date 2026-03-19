@@ -145,9 +145,9 @@ defmodule ScipElixir.Release do
         IO.puts(:stderr, "[scip-elixir] Indexing failed (exit code #{code})")
         {:error, code}
     after
-      300_000 ->
+      900_000 ->
         Port.close(port)
-        IO.puts(:stderr, "[scip-elixir] Indexing timed out after 5 minutes")
+        IO.puts(:stderr, "[scip-elixir] Indexing timed out after 15 minutes")
         {:error, :timeout}
     end
   end
