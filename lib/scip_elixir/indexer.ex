@@ -61,9 +61,30 @@ defmodule ScipElixir.Indexer do
 
         Logger.info("[scip-elixir] Compiling #{length(files)} files with tracer...")
 
-        # Suppress "redefining module" warnings that occur when modules are already
-        # loaded in memory from a previous _build/dev compilation. These warnings
-        # are harmless for indexing but can cause non-zero exit codes.
+        # Purge project modules already loaded from _build/dev to avoid memory
+        # doubling and "redefining module" warnings. We only purge modules whose
+        # beam file lives under the project's _build directory.
+        build_dir = Path.join(project_root, "_build")
+
+        purged =
+          :code.all_loaded()
+          |> Enum.count(fn {mod, beam_path} ->
+            case beam_path do
+              path when is_list(path) ->
+                str = List.to_string(path)
+                String.starts_with?(str, build_dir) and
+                  (:code.soft_purge(mod) or :code.purge(mod))
+
+              _ ->
+                false
+            end
+          end)
+
+        if purged > 0 do
+          Logger.info("[scip-elixir] Purged #{purged} project modules before recompile")
+        end
+
+        # Suppress any remaining "redefining module" warnings (e.g. from deps).
         previous_ignore_conflict = Code.get_compiler_option(:ignore_module_conflict)
         Code.put_compiler_option(:ignore_module_conflict, true)
 
