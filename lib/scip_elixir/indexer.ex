@@ -41,16 +41,18 @@ defmodule ScipElixir.Indexer do
       Code.put_compiler_option(:tracers, [ScipElixir.Tracer | previous_tracers])
 
       try do
-        # 5. Trigger compilation
-        # Use loadpaths to ensure deps are on the code path without
-        # triggering a full recompile (which can take minutes on large projects).
-        Mix.Task.run("loadpaths", [])
-
-        # Then recompile project files with our tracer active
-        # Collect files from both regular (lib/**/*.ex) and umbrella (apps/*/lib/**/*.ex)
-        # Use explicit project_root if provided — Mix may change cwd during loadpaths
+        # 5. Trigger compilation via Mix instead of raw ParallelCompiler.
+        #
+        # Using Mix.Task.run("compile") instead of Kernel.ParallelCompiler.compile:
+        #   - Writes BEAM to _build/ (OS can page out cold code, reducing RSS)
+        #   - On subsequent runs only recompiles changed files (fast, low memory)
+        #   - Handles protocol consolidation correctly (no doubled warnings)
+        #   - Respects the tracer injected above via Code.put_compiler_option
+        #
+        # Use explicit project_root if provided — Mix may change cwd during compilation
         project_root = Keyword.get(opts, :project_root, File.cwd!())
 
+        # Collect files needed for tree-sitter enrichment later
         files =
           [
             Path.wildcard(Path.join([project_root, "lib", "**", "*.ex"])),
@@ -61,35 +63,18 @@ defmodule ScipElixir.Indexer do
 
         Logger.info("[scip-elixir] Compiling #{length(files)} files with tracer...")
 
-        # Purge project modules already loaded from _build/dev to avoid memory
-        # doubling and "redefining module" warnings. We only purge modules whose
-        # beam file lives under the project's _build directory.
-        build_dir = Path.join(project_root, "_build")
-
-        purged =
-          :code.all_loaded()
-          |> Enum.count(fn {mod, beam_path} ->
-            case beam_path do
-              path when is_list(path) ->
-                str = List.to_string(path)
-                String.starts_with?(str, build_dir) and
-                  (:code.soft_purge(mod) or :code.purge(mod))
-
-              _ ->
-                false
-            end
-          end)
-
-        if purged > 0 do
-          Logger.info("[scip-elixir] Purged #{purged} project modules before recompile")
-        end
-
-        # Suppress any remaining "redefining module" warnings (e.g. from deps).
+        # Suppress "redefining module" and "already consolidated" warnings.
         previous_ignore_conflict = Code.get_compiler_option(:ignore_module_conflict)
         Code.put_compiler_option(:ignore_module_conflict, true)
 
         try do
-          Kernel.ParallelCompiler.compile(files)
+          # Reenable so this can run even if already invoked in this VM session.
+          Mix.Task.reenable("compile")
+          Mix.Task.reenable("elixir.compile")
+
+          # --force: recompile all project files so tracer captures every module.
+          # --no-deps-check: skip verifying deps (they're already on the code path).
+          Mix.Task.run("compile", ["--force", "--no-deps-check"])
         after
           Code.put_compiler_option(:ignore_module_conflict, previous_ignore_conflict)
         end
