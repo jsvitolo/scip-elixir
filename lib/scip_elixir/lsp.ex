@@ -264,23 +264,9 @@ defmodule ScipElixir.LSP do
 
       GenLSP.log(lsp, "[scip-elixir] Index loaded: #{stats.symbols} symbols, #{stats.refs} refs across #{stats.files} files")
     else
-      # No index — build it in the background
-      GenLSP.log(lsp, "[scip-elixir] No index found. Building index in background...")
-
-      db_path = assigns(lsp).db_path
-      root_uri = assigns(lsp).root_uri
-      server = self()
-
-      spawn(fn ->
-        project_dir =
-          case root_uri do
-            "file://" <> path -> URI.decode(path)
-            _ -> File.cwd!()
-          end
-
-        result = ScipElixir.Release.index_via_shell(project_dir: project_dir, db_path: db_path)
-        send(server, {:index_complete, result, db_path})
-      end)
+      # No index found — log instructions instead of triggering background
+      # indexing, which can OOM/timeout on large projects.
+      GenLSP.log(lsp, "[scip-elixir] No index at #{assigns(lsp).db_path}. Run: scip-elixir index")
     end
 
     {:noreply, lsp}

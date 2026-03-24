@@ -1,7 +1,7 @@
 defmodule ScipElixir.MixProject do
   use Mix.Project
 
-  @version "0.1.8"
+  @version "0.1.9"
 
   def project do
     [
@@ -112,8 +112,10 @@ defmodule ScipElixir.MixProject do
         exec elixir $PA_ARGS --no-halt -e "ScipElixir.Release.lsp()"
         ;;
       index)
-        # mix run resets the code path, so we prepend paths in the script
-        exec elixir -S mix run --no-start -e "[$EBIN_LIST] |> Enum.each(&Code.prepend_path/1); ScipElixir.Release.index()"
+        # --no-compile: skip the initial Mix compilation so the project is not
+        # compiled twice (once by `mix run` and again by Mix.Task.run("compile")
+        # inside the indexer). The tracer is injected before the second compile.
+        exec elixir -S mix run --no-compile --no-start -e "[$EBIN_LIST] |> Enum.each(&Code.prepend_path/1); ScipElixir.Release.index()"
         ;;
       version)
         exec elixir $PA_ARGS -e "IO.puts(ScipElixir.Release.version())"
